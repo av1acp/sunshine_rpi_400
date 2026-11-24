@@ -1,0 +1,71 @@
+name: build-sunshine-rpi400
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SUNSHINE_TAG: v2026.914.233613   # upstream stable ("Latest") we build on
+
+jobs:
+  build-arm64-deb:
+    runs-on: ubuntu-24.04-arm        # native arm64, free for public repos
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space (runner has ~14 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker system prune -af || true
+          df -h /
+
+      - name: Fetch upstream Sunshine (pinned tag, with submodules)
+        run: |
+          git clone --depth 1 --branch "$SUNSHINE_TAG" --recurse-submodules --shallow-submodules \
+            https://github.com/LizardByte/Sunshine.git upstream
+          git -C upstream rev-parse HEAD > upstream.commit
+          df -h /
+
+      - name: Apply our patch series (patches/*.patch)
+        run: |
+          shopt -s nullglob
+          n=0
+          for p in $(ls patches/*.patch 2>/dev/null | sort); do
+            echo "applying $p"; git -C upstream apply --verbose "../$p"; n=$((n+1))
+          done
+          echo "patches applied: $n"
+
+      - name: Build + package inside debian:trixie (arm64)
+        run: |
+          docker run --rm \
+            -e BRANCH=rpi400 \
+            -e BUILD_VERSION="${SUNSHINE_TAG#v}" \
+            -e COMMIT="$(cat upstream.commit)" \
+            -e DEBIAN_PACKAGE_RELEASE=1+debiantrixie.rpi400 \
+            -v "$PWD/upstream:/build/sunshine" \
+            -v "$PWD/ci:/ci:ro" \
+            debian:trixie bash /ci/build-in-container.sh
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out && cp upstream/build/cpack_artifacts/*.deb out/
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-deb-arm64
+          path: out/*.deb
+
+      - name: Publish public pre-release (so Pi can wget it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-${{ github.run_number }}"
+          gh release create "$tag" out/*.deb --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "$tag (upstream ${SUNSHINE_TAG}, patches: $(ls patches/*.patch 2>/dev/null | wc -l))" \
+            --notes "Built from upstream ${SUNSHINE_TAG} + patches/ at ${GITHUB_SHA}."
