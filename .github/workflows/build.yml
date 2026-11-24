@@ -34,11 +34,12 @@ jobs:
       - name: Apply our patch series (patches/*.patch)
         run: |
           shopt -s nullglob
-          n=0
-          for p in $(ls patches/*.patch 2>/dev/null | sort); do
-            echo "applying $p"; git -C upstream apply --verbose "../$p"; n=$((n+1))
+          patches=(patches/*.patch)
+          echo "patch files found: ${#patches[@]}"
+          for p in "${patches[@]}"; do
+            echo "applying $p"
+            git -C upstream apply --verbose "../$p"
           done
-          echo "patches applied: $n"
 
       - name: Build + package inside debian:trixie (arm64)
         run: |
@@ -67,5 +68,5 @@ jobs:
         run: |
           tag="build-${{ github.run_number }}"
           gh release create "$tag" out/*.deb --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "$tag (upstream ${SUNSHINE_TAG}, patches: $(ls patches/*.patch 2>/dev/null | wc -l))" \
+            --title "$tag (upstream ${SUNSHINE_TAG}, patches: $(find patches -name '*.patch' | wc -l))" \
             --notes "Built from upstream ${SUNSHINE_TAG} + patches/ at ${GITHUB_SHA}."
